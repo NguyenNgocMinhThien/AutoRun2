@@ -7,9 +7,18 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 
-const KEYWORDS = ["administrative", "coordicator", "assistant", "warehourse"];
+// ==================== CẤU HÌNH ĐIỀU KIỆN ====================
+const KEYWORDS = [
+    "administrative",
+    "coordinator",
+    "assistant",
+    "warehouse"
+];
 
-// --- HÀM UPLOAD LITTERBOX, TEAMS, TELEGRAM giữ nguyên như cũ ---
+// Salary condition: $24-$30/giờ hoặc 40k-60k/năm
+const SALARY_KEYWORD = "$24 OR $25 OR $26 OR $27 OR $28 OR $29 OR $30 OR $40000 OR $45000 OR $50000 OR $55000 OR $60000";
+// =========================================================
+
 async function uploadToCatbox(filePath) {
     try {
         const form = new FormData();
@@ -38,7 +47,13 @@ async function sendToTeams(totalJobs, fileLink) {
         "type": "AdaptiveCard",
         "version": "1.4",
         "body": [
-            { "type": "TextBlock", "text": "🚀 CẬP NHẬT JOB MỚI TẠI VANCOUVER", "weight": "Bolder", "size": "Medium", "color": "Accent" },
+            { 
+                "type": "TextBlock", 
+                "text": "🚀 CẬP NHẬT JOB MỚI TẠI Burnaby & Vancouver", 
+                "weight": "Bolder", 
+                "size": "Medium", 
+                "color": "Accent" 
+            },
             {
                 "type": "FactSet",
                 "facts": [
@@ -49,7 +64,11 @@ async function sendToTeams(totalJobs, fileLink) {
             }
         ],
         "actions": [
-            { "type": "Action.OpenUrl", "title": "📥 TẢI FILE EXCEL VỀ MÁY", "url": fileLink }
+            { 
+                "type": "Action.OpenUrl", 
+                "title": "📥 TẢI FILE EXCEL VỀ MÁY", 
+                "url": fileLink 
+            }
         ],
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json"
     };
@@ -68,23 +87,32 @@ async function sendTelegramAlert(message) {
     if (!botToken || !chatId) return;
     try {
         await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-            chat_id: chatId, text: message, parse_mode: 'HTML'
+            chat_id: chatId, 
+            text: message, 
+            parse_mode: 'HTML'
         });
-    } catch (e) { console.error("❌ Telegram Alert Error:", e.message); }
+    } catch (e) { 
+        console.error("❌ Telegram Alert Error:", e.message); 
+    }
 }
 
 async function sendTelegramFile(filePath) {
     const botToken = process.env.TELEGRAM_TOKEN;
     const chatId = process.env.TELEGRAM_CHAT_ID;
     if (!botToken || !chatId || !fs.existsSync(filePath)) return;
+    
     const form = new FormData();
     form.append('chat_id', chatId);
     form.append('document', fs.createReadStream(filePath));
+    
     try {
         await axios.post(`https://api.telegram.org/bot${botToken}/sendDocument`, form, {
             headers: form.getHeaders()
         });
-    } catch (e) { console.error("❌ Telegram File Error:", e.message); }
+        console.log("✅ [Telegram] Đã gửi file thành công!");
+    } catch (e) { 
+        console.error("❌ Telegram File Error:", e.message); 
+    }
 }
 
 // --- HÀM CHẠY CHÍNH ---
@@ -93,7 +121,8 @@ async function runScraper() {
     let allJobs = [];
 
     for (const kw of KEYWORDS) {
-        const targetUrl = `https://ca.indeed.com/jobs?q=${encodeURIComponent(kw + ' $60,000')}&l=Vancouver%2C+BC&radius=25&fromage=3`;
+        const targetUrl = `https://ca.indeed.com/jobs?q=${encodeURIComponent(kw + ' ' + SALARY_KEYWORD)}&l=Vancouver%2C+BC&radius=30&fromage=3`;
+        
         let attempts = 0;
         const maxAttempts = 3;
 
@@ -122,9 +151,8 @@ async function runScraper() {
 
                     const relativeLink = titleEl.find('a').attr('href') || titleEl.attr('href');
 
-                    // ==================== LẤY SALARY - CHỈ GIỮ PHẦN SỐ TIỀN ====================
+                    // LẤY SALARY
                     let salary = "";
-
                     let salaryEl = $(el).find('[data-testid="attribute_snippet_testid"], .salary-snippet-container, .estimated-salary, [class*="salary-snippet"], .salary-section');
 
                     if (salaryEl.length) {
@@ -133,13 +161,10 @@ async function runScraper() {
 
                     salary = salary.replace(/\s+/g, ' ').trim();
 
-                    // Chỉ giữ nếu có dấu $
                     if (salary.includes('$')) {
-                        // Loại bỏ các từ thừa: Full-time, Permanent, +1, Mon, Ove, etc.
                         salary = salary
                             .replace(/Full-time/gi, '')
                             .replace(/Permanent/gi, '')
-                            .replace(/Full-time/gi, '')   // phòng trường hợp lặp
                             .replace(/\+1/gi, '')
                             .replace(/Mon/gi, '')
                             .replace(/Ove/gi, '')
@@ -149,11 +174,10 @@ async function runScraper() {
                     } else {
                         salary = "";
                     }
-                    // =================================================================
 
                     const location = $(el).find('[data-testid="text-location"]').text().trim() ||
                                      $(el).find('.companyLocation').text().trim() ||
-                                     "Vancouver, BC";
+                                     "Vancouver/Burnaby, BC";
 
                     const company = $(el).find('[data-testid="company-name"]').text().trim() || "N/A";
 
@@ -163,7 +187,7 @@ async function runScraper() {
                     allJobs.push({
                         Title: title,
                         Company: company,
-                        Salary: salary,        // ← sạch sẽ chỉ còn số lương
+                        Salary: salary,
                         Location: location,
                         'Apply Method': applyMethod,
                         Link: relativeLink ? `https://ca.indeed.com${relativeLink}` : 'N/A',
@@ -196,7 +220,7 @@ async function runScraper() {
         const fileLink = await uploadToCatbox(fileName);
 
         await Promise.all([
-            sendTelegramAlert(`✅ Tìm thấy ${allJobs.length} jobs mới!`),
+            sendTelegramAlert(`✅ Tìm thấy ${allJobs.length} jobs mới tại Burnaby & Vancouver!`),
             sendTelegramFile(fileName),
             sendToTeams(allJobs.length, fileLink)
         ]);

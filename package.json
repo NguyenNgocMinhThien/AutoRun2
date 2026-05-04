@@ -1,0 +1,19 @@
+{
+  "name": "indeed-auto-scraper",
+  "version": "1.0.0",
+  "main": "scraper.js",
+  "type": "module",
+  "dependencies": {
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "axios": "^1.15.0",
+    "cheerio": "^1.0.0-rc.12",
+    "googleapis": "^171.4.0",
+    "isomorphic-fetch": "^3.0.0",
+    "nodemailer": "^6.9.0",
+    "playwright": "^1.40.0",
+    "puppeteer": "^22.6.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "xlsx": "^0.18.5"
+  }
+}

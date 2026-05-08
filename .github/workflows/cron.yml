@@ -25,13 +25,8 @@ jobs:
 
       - name: Chay Script
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
-          TEAMS_TOKEN: ${{ secrets.TEAMS_TOKEN }}
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
-          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
-          GMAIL_APP_PASS: ${{ secrets.GMAIL_APP_PASS }}
         run: node scraper.js
 
       - name: Upload Excel Report

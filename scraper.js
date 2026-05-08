@@ -28,8 +28,8 @@ const LOCATIONS = [
 const MAX_PER_KW    = 30; // crawl nhiều để lọc đủ job $250k+  // crawl nhiều để lọc đủ job $250k+
 const FROMAGE       = 14;  // mở rộng 14 ngày
 const FETCH_DETAIL  = true;
-const MIN_SALARY_YEAR  = 250000;
-const MIN_SALARY_HOUR  = 120;
+const MIN_SALARY_YEAR  = 150000;  // hạ xuống $150k vì $250k quá ít job
+const MIN_SALARY_HOUR  = 72;      // $72/hr ≈ $150k/năm
 
 const SPREADSHEET_ID = '1n-Vkvrbt6fAo_6tU5KKx54cmn_J64mRyHbSvPi7tDX0';
 const SHEET_NAME     = 'Job indeed';
@@ -68,10 +68,17 @@ function salaryQualifies(salaryText) {
     return false;
 }
 
-async function scraperGet(url) {
+async function scraperGet(url, isDetail = false) {
     return axios.get('https://api.scraperapi.com/', {
-        params: { api_key: process.env.SCRAPER_API_KEY, url, country_code: 'us' },
-        timeout: 90000
+        params: {
+            api_key:      process.env.SCRAPER_API_KEY,
+            url,
+            country_code: 'us',
+            render:       'true',        // giả lập browser, bypass Indeed block
+            premium:      'true',        // dùng premium proxy tránh 403
+            keep_headers: 'true'
+        },
+        timeout: 120000
     });
 }
 

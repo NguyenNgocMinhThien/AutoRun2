@@ -25,9 +25,11 @@ const LOCATIONS = [
     "San Jose, CA"
 ];
 
-const MAX_PER_KW    = 8;
-const FROMAGE       = 7;
+const MAX_PER_KW    = 30; // crawl nhiều để lọc đủ job $250k+  // crawl nhiều để lọc đủ job $250k+
+const FROMAGE       = 14;  // mở rộng 14 ngày
 const FETCH_DETAIL  = true;
+const MIN_SALARY_YEAR  = 250000;
+const MIN_SALARY_HOUR  = 120;
 
 const SPREADSHEET_ID = '1n-Vkvrbt6fAo_6tU5KKx54cmn_J64mRyHbSvPi7tDX0';
 const SHEET_NAME     = 'Job indeed';
@@ -48,6 +50,22 @@ function dedup(jobs) {
         seen.add(key);
         return true;
     });
+}
+
+// Lọc salary >= $250k/năm hoặc >= $120/giờ
+function salaryQualifies(salaryText) {
+    if (!salaryText || salaryText === 'N/A') return false;
+    const cleaned = salaryText.replace(/,/g, '');
+    const nums = [...cleaned.matchAll(/\$?([\d.]+)/g)].map(m => parseFloat(m[1]));
+    if (!nums.length) return false;
+    const isHour = /hour|hr/i.test(salaryText);
+    const isYear = /year|yr|annual/i.test(salaryText);
+    for (const n of nums) {
+        if (isHour && n >= MIN_SALARY_HOUR) return true;
+        if (isYear && n >= MIN_SALARY_YEAR) return true;
+        if (!isHour && !isYear && n >= MIN_SALARY_YEAR) return true;
+    }
+    return false;
 }
 
 async function scraperGet(url) {
@@ -129,14 +147,17 @@ async function scrapeKeywordLocation(kw, location) {
                 if (!salary && FETCH_DETAIL && c.link !== 'N/A') {
                     salary = await fetchDetailSalary(c.link);
                 }
+                // Bỏ qua nếu không đạt $250k
+                if (!salaryQualifies(salary)) continue;
+
                 jobs.push({
                     Company:      c.company,
                     Title:        c.title,
                     Link:         c.link,
-                    Salary:       salary || 'N/A',
+                    Salary:       salary,
                     Location:     c.loc,
                     Page:         1,
-                    EasilyApply:  c.quick ? 'Yes' : 'No',
+                    EasilyApply:  c.quick ? 'Indeed Quick Apply' : 'Company Website',
                     DateCrawled:  TODAY,
                     CrawledBy:    ''
                 });
@@ -178,7 +199,7 @@ async function appendToGoogleSheet(jobs) {
             j.Salary,
             j.Location,
             j.Page,
-            j.EasilyApply,
+            j.EasilyApply,  // Apply Method
             `'${j.DateCrawled}`,  // dấu ' đầu = force Google Sheets đọc là text
             j.CrawledBy
         ]);

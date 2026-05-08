@@ -3,6 +3,7 @@ import * as cheerio from 'cheerio';
 import XLSX from 'xlsx';
 import fs from 'fs';
 import FormData from 'form-data';
+import { google } from 'googleapis';
 
 // ==================== CẤU HÌNH ====================
 const KEYWORDS = [
@@ -24,10 +25,17 @@ const LOCATIONS = [
     "San Jose, CA"
 ];
 
-const MAX_PER_KW  = 8;
-const FROMAGE     = 7;
-const FETCH_DETAIL = true; // false = nhanh hơn nhưng salary ít hơn
+const MAX_PER_KW    = 8;
+const FROMAGE       = 7;
+const FETCH_DETAIL  = true;
+
+const SPREADSHEET_ID = '1n-Vkvrbt6fAo_6tU5KKx54cmn_J64mRyHbSvPi7tDX0';
+const SHEET_NAME     = 'Job indeed';
 // =====================================================
+
+const TODAY = new Date().toLocaleDateString('vi-VN', {
+    day: '2-digit', month: '2-digit', year: 'numeric'
+}).replace(/\//g, '/');
 
 function dedup(jobs) {
     const seen = new Set();
@@ -46,11 +54,8 @@ async function scraperGet(url) {
     });
 }
 
-// Lấy salary từ HTML (list page hoặc detail page)
 function parseSalary($, root) {
     const node = root ? $(root) : $('body');
-
-    // Các selector phổ biến trên Indeed US
     const selectors = [
         '[data-testid="attribute_snippet_testid"]',
         '[data-testid="salary-snippet"]',
@@ -63,17 +68,13 @@ function parseSalary($, root) {
         '.jobsearch-JobMetadataHeader-item',
         '[data-testid="jobsearch-JobMetadataHeader-salaryInfoAndJobType"]'
     ];
-
     for (const sel of selectors) {
         const t = node.find(sel).first().text().replace(/\s+/g, ' ').trim();
         if (t && t.includes('$')) return cleanSalary(t);
     }
-
-    // Regex fallback — tìm pattern $X - $Y a year / an hour
     const bodyText = node.text().replace(/\s+/g, ' ');
     const m = bodyText.match(/\$[\d,]+(?:\.\d+)?\s*(?:[-–]\s*\$[\d,]+(?:\.\d+)?)?\s*(?:a year|an hour|per year|per hour|\/hr|\/year)/i);
     if (m) return cleanSalary(m[0]);
-
     return '';
 }
 
@@ -83,8 +84,6 @@ function cleanSalary(s) {
             .replace(/\s+/g, ' ')
             .trim();
 }
-
-// ==================== SCRAPER ====================
 
 async function fetchDetailSalary(link) {
     try {
@@ -100,8 +99,7 @@ async function scrapeKeywordLocation(kw, location) {
     const l   = encodeURIComponent(location);
     const url = `https://www.indeed.com/jobs?q=${q}&l=${l}&radius=50&fromage=${FROMAGE}`;
 
-    const maxAttempts = 3;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
         try {
             const res = await scraperGet(url);
             const $   = cheerio.load(res.data);
@@ -109,22 +107,19 @@ async function scrapeKeywordLocation(kw, location) {
 
             $('.job_seen_beacon').each((i, el) => {
                 if (cards.length >= MAX_PER_KW) return false;
-
                 const titleEl = $(el).find('h2.jobTitle a, a.jcs-JobTitle');
                 const title   = titleEl.text().trim() || $(el).find('h2.jobTitle').text().trim();
                 if (!title) return;
-
                 const href    = titleEl.attr('href') || '';
                 const link    = href.startsWith('http') ? href : `https://www.indeed.com${href}`;
                 const salary  = parseSalary($, el);
                 const loc     = $(el).find('[data-testid="text-location"], .companyLocation').text().trim() || location;
                 const company = $(el).find('[data-testid="company-name"], .companyName').text().trim() || 'N/A';
                 const quick   = $(el).find('[data-testid="indeedApplyButton"], .iaIcon').length > 0;
-
+                // Lấy page number nếu có
                 cards.push({ title, company, salary, loc, link, quick });
             });
 
-            // Fetch detail page để bổ sung salary còn thiếu
             const jobs = [];
             for (const c of cards) {
                 let salary = c.salary;
@@ -132,14 +127,15 @@ async function scrapeKeywordLocation(kw, location) {
                     salary = await fetchDetailSalary(c.link);
                 }
                 jobs.push({
-                    Title:          c.title,
-                    Company:        c.company,
-                    Salary:         salary || 'Not listed',
-                    Location:       c.loc,
-                    'Apply Method': c.quick ? 'Indeed Quick Apply' : 'Company Website',
-                    Link:           c.link,
-                    Keyword:        kw,
-                    Region:         location
+                    Company:      c.company,
+                    Title:        c.title,
+                    Link:         c.link,
+                    Salary:       salary || 'N/A',
+                    Location:     c.loc,
+                    Page:         1,
+                    EasilyApply:  c.quick ? 'Yes' : 'No',
+                    DateCrawled:  TODAY,
+                    CrawledBy:    ''
                 });
             }
 
@@ -148,10 +144,54 @@ async function scrapeKeywordLocation(kw, location) {
 
         } catch (err) {
             console.warn(`  ⚠️ Lần ${attempt} [${location}] "${kw}" — ${err.response?.status ?? err.message}`);
-            if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 5000));
+            if (attempt < 3) await new Promise(r => setTimeout(r, 5000));
         }
     }
     return [];
+}
+
+// ==================== GOOGLE SHEETS ====================
+
+async function appendToGoogleSheet(jobs) {
+    try {
+        const serviceAccountJson = process.env.GDRIVE_SERVICE_ACCOUNT_JSON;
+        if (!serviceAccountJson) {
+            console.warn("⚠️ Thiếu GDRIVE_SERVICE_ACCOUNT_JSON — bỏ qua Google Sheets");
+            return;
+        }
+
+        const credentials = JSON.parse(serviceAccountJson);
+        const auth = new google.auth.GoogleAuth({
+            credentials,
+            scopes: ['https://www.googleapis.com/auth/spreadsheets']
+        });
+        const sheets = google.sheets({ version: 'v4', auth });
+
+        // Map data theo đúng thứ tự cột: A=CompanyName, B=Job Title, C=Link, D=Salary, E=Location, F=Page, G=Easily Apply, H=Ngày lấy job, I=Người Crawl Data
+        const rows = jobs.map(j => [
+            j.Company,
+            j.Title,
+            j.Link,
+            j.Salary,
+            j.Location,
+            j.Page,
+            j.EasilyApply,
+            j.DateCrawled,
+            j.CrawledBy
+        ]);
+
+        await sheets.spreadsheets.values.append({
+            spreadsheetId: SPREADSHEET_ID,
+            range:         `${SHEET_NAME}!A:I`,
+            valueInputOption: 'USER_ENTERED',
+            insertDataOption: 'INSERT_ROWS',
+            requestBody: { values: rows }
+        });
+
+        console.log(`✅ [Google Sheets] Đã append ${jobs.length} rows vào "${SHEET_NAME}"`);
+    } catch (e) {
+        console.error("❌ [Google Sheets] Lỗi:", e.message);
+    }
 }
 
 // ==================== UPLOAD & NOTIFY ====================
@@ -184,10 +224,13 @@ async function sendToTeams(n, fileLink) {
                     { title: "Nguồn:",   value: "Indeed US" },
                     { title: "Khu vực:", value: "California" },
                     { title: "Số job:",  value: `${n}` },
-                    { title: "Status:",  value: "✅ Sẵn sàng" }
+                    { title: "Status:",  value: "✅ Đã ghi Google Sheets" }
                 ]}
             ],
-            actions: [{ type: "Action.OpenUrl", title: "📥 Tải Excel", url: fileLink }],
+            actions: [
+                { type: "Action.OpenUrl", title: "📊 Mở Google Sheet", url: `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit#gid=158387611` },
+                { type: "Action.OpenUrl", title: "📥 Tải Excel",       url: fileLink }
+            ],
             $schema: "http://adaptivecards.io/schemas/adaptive-card.json"
         });
         console.log("✅ [Teams] Gửi thành công!");
@@ -217,7 +260,7 @@ async function sendTelegramFile(filePath) {
 
 async function runScraper() {
     console.log("🚀 Indeed US Scraper — California");
-    console.log(`📋 ${KEYWORDS.length} keywords | Max ${MAX_PER_KW} jobs/keyword | Fetch detail: ${FETCH_DETAIL}\n`);
+    console.log(`📋 ${KEYWORDS.length} keywords | Max ${MAX_PER_KW}/keyword | Sheet: "${SHEET_NAME}"\n`);
 
     if (!process.env.SCRAPER_API_KEY) { console.error("❌ Thiếu SCRAPER_API_KEY!"); process.exit(1); }
 
@@ -244,6 +287,10 @@ async function runScraper() {
         return;
     }
 
+    // Ghi Google Sheets
+    await appendToGoogleSheet(allJobs);
+
+    // Xuất Excel backup
     const fileName = `Indeed_US_CA_${new Date().toISOString().slice(0,10)}.xlsx`;
     const ws = XLSX.utils.json_to_sheet(allJobs);
     ws['!cols'] = Object.keys(allJobs[0]).map(k => ({
@@ -252,11 +299,16 @@ async function runScraper() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Jobs");
     XLSX.writeFile(wb, fileName);
-    console.log(`📊 Lưu → ${fileName}`);
+    console.log(`📊 Backup Excel → ${fileName}`);
 
     const fileLink = await uploadToCatbox(fileName);
     await Promise.all([
-        sendTelegramAlert(`✅ <b>Indeed US / California</b>\n<b>${allJobs.length} jobs</b>\n📎 <a href="${fileLink}">Tải Excel</a>`),
+        sendTelegramAlert(
+            `✅ <b>Indeed US / California</b>\n` +
+            `<b>${allJobs.length} jobs</b> đã ghi vào Google Sheets\n` +
+            `📊 <a href="https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit#gid=158387611">Mở Sheet</a>\n` +
+            `📎 <a href="${fileLink}">Tải Excel</a>`
+        ),
         sendTelegramFile(fileName),
         sendToTeams(allJobs.length, fileLink)
     ]);

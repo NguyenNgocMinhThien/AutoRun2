@@ -1,6 +1,5 @@
 import axios from 'axios';
 import XLSX from 'xlsx';
-import * as cheerio from 'cheerio';
 import fs from 'fs';
 import FormData from 'form-data';
 
@@ -19,14 +18,13 @@ const KEYWORDS = [
 ];
 
 const LOCATIONS = [
-    { label: "Los Angeles, CA",   param: "Los Angeles, CA" },
-    { label: "San Francisco, CA", param: "San Francisco, CA" },
-    { label: "San Jose, CA",      param: "San Jose, CA" }
+    "Los Angeles, CA",
+    "San Francisco, CA",
+    "San Jose, CA"
 ];
 
-const RADIUS        = 50;
-const FROMAGE       = 7;
-const MAX_PER_KW    = 8;   // ← Giới hạn jobs mỗi keyword (tổng 3 vùng)
+const MAX_PER_KW = 8;   // Tổng jobs mỗi keyword (gộp 3 vùng)
+const FROMAGE    = 7;   // 7 ngày gần nhất
 // =====================================================
 
 function dedup(jobs) {
@@ -65,11 +63,10 @@ async function sendToTeams(totalJobs, fileLink) {
     const card = {
         "type": "AdaptiveCard", "version": "1.4",
         "body": [
-            { "type": "TextBlock", "text": "🚀 JOB MỚI — CALIFORNIA US ($250k+)", "weight": "Bolder", "size": "Medium", "color": "Accent" },
+            { "type": "TextBlock", "text": "🚀 JOB MỚI — CALIFORNIA US", "weight": "Bolder", "size": "Medium", "color": "Accent" },
             { "type": "FactSet", "facts": [
                 { "title": "Nguồn:",    "value": "Indeed US" },
                 { "title": "Khu vực:", "value": "California (LA / SF / SJ)" },
-                { "title": "Lương:",   "value": "≥ $250,000/năm" },
                 { "title": "Số job:",  "value": `${totalJobs}` },
                 { "title": "Status:",  "value": "✅ Sẵn sàng" }
             ]}
@@ -107,113 +104,204 @@ async function sendTelegramFile(filePath) {
     } catch (e) { console.error("❌ Telegram File:", e.message); }
 }
 
-// ==================== PARSE SALARY ====================
-
-function extractSalary($, el) {
-    // Thử nhiều selector Indeed US 2024-2025
-    const selectors = [
-        '[data-testid="attribute_snippet_testid"]',
-        '[data-testid="salary-snippet"]',
-        '.salary-snippet-container',
-        '.estimated-salary-container',
-        '[class*="salary-snippet"]',
-        '[class*="salaryText"]',
-        '.metadata-salary-container',
-        '[data-testid*="salary"]',
-        '.salary-section',
-        // Fallback: tìm bất kỳ text chứa $
-        '.jobMetaDataGroup'
-    ];
-
-    for (const sel of selectors) {
-        const text = $(el).find(sel).first().text().trim();
-        if (text && text.includes('$')) {
-            return text
-                .replace(/Full-time|Permanent|Contract|Part-time/gi, '')
-                .replace(/\+\d+/g, '')
-                .replace(/\s+/g, ' ')
-                .trim();
-        }
-    }
-
-    // Last resort: scan toàn bộ text trong card tìm pattern $xxx,xxx
-    const fullText = $(el).text();
-    const match = fullText.match(/\$[\d,]+(?:\s*-\s*\$[\d,]+)?(?:\s*(?:a year|an hour|\/hr|\/year|per year|per hour))?/i);
-    if (match) return match[0].trim();
-
-    return '';
-}
-
-// ==================== SCRAPER ====================
+// ==================== SCRAPER (Structured Data API) ====================
 
 async function scrapeKeywordLocation(kw, location) {
     const maxAttempts = 3;
-    const q = encodeURIComponent(kw);
-    const l = encodeURIComponent(location.param);
-    const targetUrl = `https://www.indeed.com/jobs?q=${q}&l=${l}&radius=${RADIUS}&fromage=${FROMAGE}`;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-            const response = await axios.get('https://api.scraperapi.com/', {
+            // ScraperAPI Structured Data — trả JSON có đầy đủ salary
+            const response = await axios.get('https://api.scraperapi.com/structured/indeed/search', {
                 params: {
-                    api_key:      process.env.SCRAPER_API_KEY,
-                    url:          targetUrl,
-                    country_code: 'us',
-                    render:       'false'
+                    api_key:  process.env.SCRAPER_API_KEY,
+                    query:    kw,
+                    location: location,
+                    country:  'us',
+                    page:     1,
+                    fromage:  FROMAGE
                 },
                 timeout: 90000
             });
 
-            const $ = cheerio.load(response.data);
-            const found = [];
+            const data = response.data;
+            // Structured API trả về: { jobs: [...] }
+            const rawJobs = data?.jobs || data?.organic_results || data?.results || [];
 
-            $('.job_seen_beacon').each((i, el) => {
-                // Dừng khi đủ số lượng
-                if (found.length >= MAX_PER_KW) return false;
+            if (!Array.isArray(rawJobs) || rawJobs.length === 0) {
+                console.log(`  ⚠️ [${location}] "${kw}" — Không có data (attempt ${attempt})`);
+                // Thử lại nếu empty
+                if (attempt < maxAttempts) { await new Promise(r => setTimeout(r, 4000)); continue; }
+                return [];
+            }
 
-                const titleEl = $(el).find('h2.jobTitle span[title], h2.jobTitle a span, a.jcs-JobTitle span');
-                const title   = titleEl.first().text().trim()
-                             || $(el).find('h2.jobTitle').text().trim();
-                if (!title) return;
+            const found = rawJobs.slice(0, MAX_PER_KW).map(job => {
+                // Chuẩn hóa salary từ nhiều field có thể có
+                const salary =
+                    job.salary          ||
+                    job.salary_text     ||
+                    job.salary_min && job.salary_max
+                        ? `$${job.salary_min?.toLocaleString()} - $${job.salary_max?.toLocaleString()} ${job.salary_type || ''}`
+                        : job.pay         ||
+                          job.compensation||
+                          'Not listed';
 
-                const linkEl       = $(el).find('h2.jobTitle a, a.jcs-JobTitle');
-                const relativeLink = linkEl.attr('href') || '';
+                const link = job.link || job.url || job.job_url || '';
 
-                const salary = extractSalary($, el);
-
-                const jobLocation =
-                    $(el).find('[data-testid="text-location"]').text().trim() ||
-                    $(el).find('.companyLocation').text().trim()              ||
-                    location.label;
-
-                const company =
-                    $(el).find('[data-testid="company-name"]').text().trim() ||
-                    $(el).find('.companyName').text().trim() || 'N/A';
-
-                const isQuickApply = $(el).find('[data-testid="indeedApplyButton"], .iaIcon').length > 0;
-
-                found.push({
-                    Title:          title,
-                    Company:        company,
-                    Salary:         salary || 'Not listed',
-                    Location:       jobLocation,
-                    'Apply Method': isQuickApply ? 'Indeed Quick Apply' : 'Company Website',
-                    Link:           relativeLink ? `https://www.indeed.com${relativeLink}` : 'N/A',
+                return {
+                    Title:          job.title        || job.job_title  || 'N/A',
+                    Company:        job.company      || job.company_name|| 'N/A',
+                    Salary:         typeof salary === 'string' ? salary.trim() : 'Not listed',
+                    Location:       job.location     || job.job_location|| location,
+                    'Apply Method': job.apply_options?.[0]?.title || (link.includes('indeed') ? 'Indeed' : 'Company Website'),
+                    Link:           link.startsWith('http') ? link : link ? `https://www.indeed.com${link}` : 'N/A',
                     Keyword:        kw,
-                    Region:         location.label
-                });
+                    Region:         location,
+                    'Date Posted':  job.date         || job.posted_at  || ''
+                };
             });
 
-            console.log(`  ✅ [${location.label}] "${kw}" → ${found.length} jobs`);
+            console.log(`  ✅ [${location}] "${kw}" → ${found.length} jobs`);
             return found;
 
         } catch (err) {
-            const status = err.response?.status ?? 'N/A';
-            console.warn(`  ⚠️ Lần ${attempt} — HTTP ${status}: ${err.message}`);
+            const status  = err.response?.status ?? 'N/A';
+            const errBody = JSON.stringify(err.response?.data ?? err.message).slice(0, 200);
+            console.warn(`  ⚠️ Lần ${attempt} [${location}] "${kw}" — HTTP ${status}: ${errBody}`);
+
+            // Nếu structured API không khả dụng (404/403), fallback sang raw scrape
+            if (status === 404 || status === 403) {
+                console.log(`  🔄 Fallback sang raw scrape...`);
+                return await scrapeRawFallback(kw, location);
+            }
+
             if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 6000));
         }
     }
     return [];
+}
+
+// ==================== FALLBACK: Raw HTML scrape + fetch job detail ====================
+
+import * as cheerio from 'cheerio';
+
+async function scrapeRawFallback(kw, location) {
+    try {
+        const q = encodeURIComponent(kw);
+        const l = encodeURIComponent(location);
+        const targetUrl = `https://www.indeed.com/jobs?q=${q}&l=${l}&radius=50&fromage=${FROMAGE}`;
+
+        const response = await axios.get('https://api.scraperapi.com/', {
+            params: {
+                api_key:      process.env.SCRAPER_API_KEY,
+                url:          targetUrl,
+                country_code: 'us',
+                render:       'false'
+            },
+            timeout: 90000
+        });
+
+        const $ = cheerio.load(response.data);
+        const jobs = [];
+
+        // Lấy danh sách job cơ bản từ list page
+        const cards = [];
+        $('.job_seen_beacon').each((i, el) => {
+            if (cards.length >= MAX_PER_KW) return false;
+
+            const titleEl      = $(el).find('h2.jobTitle a, a.jcs-JobTitle');
+            const title        = titleEl.text().trim() || $(el).find('h2.jobTitle').text().trim();
+            const relativeLink = titleEl.attr('href') || '';
+            if (!title) return;
+
+            // Thử lấy salary từ list page trước
+            let salary = '';
+            const salarySelectors = [
+                '[data-testid="attribute_snippet_testid"]',
+                '[data-testid="salary-snippet"]',
+                '.salary-snippet-container',
+                '.estimated-salary-container',
+                '[class*="salary"]'
+            ];
+            for (const sel of salarySelectors) {
+                const t = $(el).find(sel).first().text().trim();
+                if (t && t.includes('$')) { salary = t; break; }
+            }
+            // Regex fallback
+            if (!salary) {
+                const m = $(el).text().match(/\$[\d,]+(?:\s*[-–]\s*\$[\d,]+)?(?:\s*(?:a year|an hour|\/hr|\/year))?/i);
+                if (m) salary = m[0];
+            }
+
+            cards.push({
+                title,
+                company:  $(el).find('[data-testid="company-name"], .companyName').text().trim() || 'N/A',
+                location: $(el).find('[data-testid="text-location"], .companyLocation').text().trim() || location,
+                salary,
+                link:     relativeLink ? `https://www.indeed.com${relativeLink}` : 'N/A',
+                isQuick:  $(el).find('[data-testid="indeedApplyButton"], .iaIcon').length > 0
+            });
+        });
+
+        // Fetch job detail page để lấy salary nếu list page không có
+        for (const card of cards) {
+            let salary = card.salary;
+
+            if (!salary && card.link !== 'N/A') {
+                try {
+                    await new Promise(r => setTimeout(r, 1500));
+                    const detail = await axios.get('https://api.scraperapi.com/', {
+                        params: {
+                            api_key:      process.env.SCRAPER_API_KEY,
+                            url:          card.link,
+                            country_code: 'us'
+                        },
+                        timeout: 60000
+                    });
+                    const $d = cheerio.load(detail.data);
+
+                    // Selector trong job detail page
+                    const detailSelectors = [
+                        '[data-testid="jobsearch-JobMetadataHeader-salaryInfoAndJobType"]',
+                        '[data-testid="salary-snippet"]',
+                        '.jobsearch-JobMetadataHeader-item',
+                        '[class*="salaryInfoAndJobType"]',
+                        '.icl-u-xs-mr--xs'
+                    ];
+                    for (const sel of detailSelectors) {
+                        const t = $d(sel).text().replace(/\s+/g, ' ').trim();
+                        if (t && t.includes('$')) { salary = t; break; }
+                    }
+                    // Regex fallback trên detail
+                    if (!salary) {
+                        const m = $d('body').text().match(/\$[\d,]+\s*[-–]\s*\$[\d,]+\s*a year/i);
+                        if (m) salary = m[0];
+                    }
+                } catch (e) {
+                    // Bỏ qua nếu lỗi fetch detail
+                }
+            }
+
+            jobs.push({
+                Title:          card.title,
+                Company:        card.company,
+                Salary:         salary || 'Not listed',
+                Location:       card.location,
+                'Apply Method': card.isQuick ? 'Indeed Quick Apply' : 'Company Website',
+                Link:           card.link,
+                Keyword:        kw,
+                Region:         location,
+                'Date Posted':  ''
+            });
+        }
+
+        console.log(`  ✅ [Fallback][${location}] "${kw}" → ${jobs.length} jobs`);
+        return jobs;
+
+    } catch (err) {
+        console.error(`  ❌ Fallback error: ${err.message}`);
+        return [];
+    }
 }
 
 // ==================== MAIN ====================
@@ -233,16 +321,13 @@ async function runScraper() {
         let kwJobs = [];
 
         for (const loc of LOCATIONS) {
-            // Chỉ cần đủ MAX_PER_KW thì bỏ qua các vùng còn lại
             if (kwJobs.length >= MAX_PER_KW) break;
-
             const jobs = await scrapeKeywordLocation(kw, loc);
             kwJobs.push(...jobs);
             await new Promise(r => setTimeout(r, 2000));
         }
 
-        // Giới hạn cứng theo keyword
-        kwJobs = kwJobs.slice(0, MAX_PER_KW);
+        kwJobs = dedup(kwJobs).slice(0, MAX_PER_KW);
         console.log(`  → Tổng "${kw}": ${kwJobs.length} jobs\n`);
         allJobs.push(...kwJobs);
     }

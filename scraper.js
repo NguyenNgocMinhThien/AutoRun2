@@ -24,22 +24,10 @@ const LOCATIONS = [
     { label: "San Jose, CA",      param: "San Jose, CA" }
 ];
 
-const RADIUS  = 50;
-const FROMAGE = 7;
+const RADIUS        = 50;
+const FROMAGE       = 7;
+const MAX_PER_KW    = 8;   // ← Giới hạn jobs mỗi keyword (tổng 3 vùng)
 // =====================================================
-
-function salaryQualifies(salaryText) {
-    if (!salaryText || !salaryText.includes('$')) return false;
-    const cleaned = salaryText.replace(/,/g, '');
-    const numbers = [...cleaned.matchAll(/\$?([\d.]+)/g)].map(m => parseFloat(m[1]));
-    if (!numbers.length) return false;
-    for (const num of numbers) {
-        if (/hour|hr/i.test(salaryText)  && num >= 120)    return true;
-        if (/year|yr|annual/i.test(salaryText) && num >= 250000) return true;
-        if (!/hour|hr|month|week/i.test(salaryText) && num >= 250000) return true;
-    }
-    return false;
-}
 
 function dedup(jobs) {
     const seen = new Set();
@@ -64,7 +52,7 @@ async function uploadToCatbox(filePath) {
         });
         const link = res.data.trim();
         if (link.includes('https://')) return link;
-        throw new Error("Invalid link: " + link);
+        throw new Error("Invalid: " + link);
     } catch (e) {
         console.error("❌ Catbox:", e.message);
         return `https://github.com/${process.env.GITHUB_REPOSITORY}/actions`;
@@ -119,22 +107,53 @@ async function sendTelegramFile(filePath) {
     } catch (e) { console.error("❌ Telegram File:", e.message); }
 }
 
+// ==================== PARSE SALARY ====================
+
+function extractSalary($, el) {
+    // Thử nhiều selector Indeed US 2024-2025
+    const selectors = [
+        '[data-testid="attribute_snippet_testid"]',
+        '[data-testid="salary-snippet"]',
+        '.salary-snippet-container',
+        '.estimated-salary-container',
+        '[class*="salary-snippet"]',
+        '[class*="salaryText"]',
+        '.metadata-salary-container',
+        '[data-testid*="salary"]',
+        '.salary-section',
+        // Fallback: tìm bất kỳ text chứa $
+        '.jobMetaDataGroup'
+    ];
+
+    for (const sel of selectors) {
+        const text = $(el).find(sel).first().text().trim();
+        if (text && text.includes('$')) {
+            return text
+                .replace(/Full-time|Permanent|Contract|Part-time/gi, '')
+                .replace(/\+\d+/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+    }
+
+    // Last resort: scan toàn bộ text trong card tìm pattern $xxx,xxx
+    const fullText = $(el).text();
+    const match = fullText.match(/\$[\d,]+(?:\s*-\s*\$[\d,]+)?(?:\s*(?:a year|an hour|\/hr|\/year|per year|per hour))?/i);
+    if (match) return match[0].trim();
+
+    return '';
+}
+
 // ==================== SCRAPER ====================
 
 async function scrapeKeywordLocation(kw, location) {
     const maxAttempts = 3;
-
-    // Build URL — encode từng param riêng lẻ
     const q = encodeURIComponent(kw);
     const l = encodeURIComponent(location.param);
     const targetUrl = `https://www.indeed.com/jobs?q=${q}&l=${l}&radius=${RADIUS}&fromage=${FROMAGE}`;
 
-    console.log(`  🔍 [${location.label}] "${kw}"`);
-
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-            // ScraperAPI endpoint đúng: https://api.scraperapi.com/
-            // Truyền targetUrl qua params.url — axios sẽ encode lại đúng
             const response = await axios.get('https://api.scraperapi.com/', {
                 params: {
                     api_key:      process.env.SCRAPER_API_KEY,
@@ -148,44 +167,35 @@ async function scrapeKeywordLocation(kw, location) {
             const $ = cheerio.load(response.data);
             const found = [];
 
-            const totalCards = $('.job_seen_beacon').length;
-            console.log(`     → ${totalCards} cards trên trang`);
-
             $('.job_seen_beacon').each((i, el) => {
-                const titleEl = $(el).find('h2.jobTitle span[title], h2.jobTitle a, a.jcs-JobTitle');
-                const title   = titleEl.first().text().trim();
+                // Dừng khi đủ số lượng
+                if (found.length >= MAX_PER_KW) return false;
+
+                const titleEl = $(el).find('h2.jobTitle span[title], h2.jobTitle a span, a.jcs-JobTitle span');
+                const title   = titleEl.first().text().trim()
+                             || $(el).find('h2.jobTitle').text().trim();
                 if (!title) return;
 
                 const linkEl       = $(el).find('h2.jobTitle a, a.jcs-JobTitle');
                 const relativeLink = linkEl.attr('href') || '';
 
-                let salary = $(el).find(
-                    '[data-testid="attribute_snippet_testid"], ' +
-                    '.salary-snippet-container, ' +
-                    '.estimated-salary-container, ' +
-                    '[class*="salary-snippet"], ' +
-                    '.salary-section'
-                ).first().text().replace(/\s+/g, ' ').trim();
+                const salary = extractSalary($, el);
 
-                if (salary.includes('$')) {
-                    salary = salary.replace(/Full-time|Permanent|Contract/gi, '').replace(/\+\d+/g, '').trim();
-                } else {
-                    salary = '';
-                }
+                const jobLocation =
+                    $(el).find('[data-testid="text-location"]').text().trim() ||
+                    $(el).find('.companyLocation').text().trim()              ||
+                    location.label;
 
-                if (salary && !salaryQualifies(salary)) return;
+                const company =
+                    $(el).find('[data-testid="company-name"]').text().trim() ||
+                    $(el).find('.companyName').text().trim() || 'N/A';
 
-                const jobLocation = $(el).find('[data-testid="text-location"]').text().trim()
-                    || $(el).find('.companyLocation').text().trim()
-                    || location.label;
-
-                const company = $(el).find('[data-testid="company-name"]').text().trim() || 'N/A';
                 const isQuickApply = $(el).find('[data-testid="indeedApplyButton"], .iaIcon').length > 0;
 
                 found.push({
                     Title:          title,
                     Company:        company,
-                    Salary:         salary,
+                    Salary:         salary || 'Not listed',
                     Location:       jobLocation,
                     'Apply Method': isQuickApply ? 'Indeed Quick Apply' : 'Company Website',
                     Link:           relativeLink ? `https://www.indeed.com${relativeLink}` : 'N/A',
@@ -194,17 +204,15 @@ async function scrapeKeywordLocation(kw, location) {
                 });
             });
 
-            console.log(`  ✅ ${found.length} jobs đạt điều kiện lương`);
+            console.log(`  ✅ [${location.label}] "${kw}" → ${found.length} jobs`);
             return found;
 
         } catch (err) {
             const status = err.response?.status ?? 'N/A';
-            const body   = JSON.stringify(err.response?.data ?? err.message).slice(0, 300);
-            console.warn(`  ⚠️ Lần ${attempt} — HTTP ${status}: ${body}`);
+            console.warn(`  ⚠️ Lần ${attempt} — HTTP ${status}: ${err.message}`);
             if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 6000));
         }
     }
-
     return [];
 }
 
@@ -212,7 +220,7 @@ async function scrapeKeywordLocation(kw, location) {
 
 async function runScraper() {
     console.log("🚀 Indeed US Scraper — California");
-    console.log(`📋 ${KEYWORDS.length} keywords × ${LOCATIONS.length} vùng\n`);
+    console.log(`📋 ${KEYWORDS.length} keywords × ${LOCATIONS.length} vùng | Max ${MAX_PER_KW} jobs/keyword\n`);
 
     if (!process.env.SCRAPER_API_KEY) {
         console.error("❌ Thiếu SCRAPER_API_KEY!");
@@ -222,19 +230,29 @@ async function runScraper() {
     let allJobs = [];
 
     for (const kw of KEYWORDS) {
+        let kwJobs = [];
+
         for (const loc of LOCATIONS) {
+            // Chỉ cần đủ MAX_PER_KW thì bỏ qua các vùng còn lại
+            if (kwJobs.length >= MAX_PER_KW) break;
+
             const jobs = await scrapeKeywordLocation(kw, loc);
-            allJobs.push(...jobs);
-            await new Promise(r => setTimeout(r, 2500));
+            kwJobs.push(...jobs);
+            await new Promise(r => setTimeout(r, 2000));
         }
+
+        // Giới hạn cứng theo keyword
+        kwJobs = kwJobs.slice(0, MAX_PER_KW);
+        console.log(`  → Tổng "${kw}": ${kwJobs.length} jobs\n`);
+        allJobs.push(...kwJobs);
     }
 
     allJobs = dedup(allJobs);
-    console.log(`\n📦 Tổng sau dedup: ${allJobs.length} jobs`);
+    console.log(`📦 Tổng sau dedup: ${allJobs.length} jobs`);
 
     if (allJobs.length === 0) {
         console.log("❌ Không tìm thấy job nào.");
-        await sendTelegramAlert("❌ Indeed US/CA: Không có job ≥ $250k/năm.");
+        await sendTelegramAlert("❌ Indeed US/CA: Không có job nào.");
         return;
     }
 
@@ -253,7 +271,7 @@ async function runScraper() {
     await Promise.all([
         sendTelegramAlert(
             `✅ <b>Indeed US / California</b>\n` +
-            `<b>${allJobs.length} jobs</b> lương ≥ $250k/năm\n` +
+            `<b>${allJobs.length} jobs</b>\n` +
             `📎 <a href="${fileLink}">Tải Excel</a>`
         ),
         sendTelegramFile(fileName),

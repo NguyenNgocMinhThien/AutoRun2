@@ -33,9 +33,12 @@ const SPREADSHEET_ID = '1n-Vkvrbt6fAo_6tU5KKx54cmn_J64mRyHbSvPi7tDX0';
 const SHEET_NAME     = 'Job indeed';
 // =====================================================
 
-const TODAY = new Date().toLocaleDateString('vi-VN', {
-    day: '2-digit', month: '2-digit', year: 'numeric'
-}).replace(/\//g, '/');
+// Format ngày dạng string DD/MM/YYYY — tránh Google Sheets đọc thành serial number
+const now   = new Date();
+const dd    = String(now.getDate()).padStart(2, '0');
+const mm    = String(now.getMonth() + 1).padStart(2, '0');
+const yyyy  = now.getFullYear();
+const TODAY = `${dd}/${mm}/${yyyy}`; // "08/05/2026"
 
 function dedup(jobs) {
     const seen = new Set();
@@ -176,7 +179,7 @@ async function appendToGoogleSheet(jobs) {
             j.Location,
             j.Page,
             j.EasilyApply,
-            j.DateCrawled,
+            `'${j.DateCrawled}`,  // dấu ' đầu = force Google Sheets đọc là text
             j.CrawledBy
         ]);
 

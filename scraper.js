@@ -48,7 +48,7 @@ const LOCATIONS = [
 
 const MAX_PER_KW    = 10;
 const FROMAGE       = 14;  // mở rộng 14 ngày
-const FETCH_DETAIL  = false; // tắt để tránh chạy quá lâu
+const FETCH_DETAIL  = true;
 const MIN_SALARY_YEAR  = 250000;
 const MIN_SALARY_HOUR  = 120;     // $120/hr ≈ $250k/năm
 
@@ -149,7 +149,7 @@ function cleanSalary(s) {
 
 async function fetchDetailSalary(link) {
     try {
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 500));
         const res = await scraperGet(link);
         const $   = cheerio.load(res.data);
         return parseSalary($, null);
@@ -184,14 +184,12 @@ async function scrapeKeywordLocation(kw, location) {
 
             const jobs = [];
             for (const c of cards) {
+                // Lấy salary: list page trước, nếu không có thì fetch detail
                 let salary = c.salary;
                 if (!salary && FETCH_DETAIL && c.link !== 'N/A') {
                     salary = await fetchDetailSalary(c.link);
                 }
-                // Bỏ qua nếu title không match keyword
-                if (!titleQualifies(c.title)) continue;
-
-                // Bỏ qua nếu không đạt $250k
+                // Lọc salary >= $250k
                 if (!salaryQualifies(salary)) continue;
 
                 jobs.push({

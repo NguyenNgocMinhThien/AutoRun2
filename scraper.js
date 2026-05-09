@@ -28,8 +28,8 @@ const LOCATIONS = [
 const MAX_PER_KW    = 10;
 const FROMAGE       = 14;  // mở rộng 14 ngày
 const FETCH_DETAIL  = false; // tắt để tránh chạy quá lâu
-const MIN_SALARY_YEAR  = 150000;  // hạ xuống $150k vì $250k quá ít job
-const MIN_SALARY_HOUR  = 72;      // $72/hr ≈ $150k/năm
+const MIN_SALARY_YEAR  = 250000;
+const MIN_SALARY_HOUR  = 120;     // $120/hr ≈ $250k/năm
 
 const SPREADSHEET_ID = '1n-Vkvrbt6fAo_6tU5KKx54cmn_J64mRyHbSvPi7tDX0';
 const SHEET_NAME     = 'Job indeed';
@@ -52,20 +52,34 @@ function dedup(jobs) {
     });
 }
 
-// Lọc salary >= $250k/năm hoặc >= $120/giờ
+// Lọc salary >= $150k/năm hoặc >= $72/giờ
+// Lấy số LỚN NHẤT trong range để đảm bảo ít nhất ceiling đạt ngưỡng
 function salaryQualifies(salaryText) {
     if (!salaryText || salaryText === 'N/A') return false;
+
+    const isHour = /hour|hr|\/hr/i.test(salaryText);
+    const isYear = /year|yr|annual|\/yr/i.test(salaryText);
+    const isWeek = /week|\/wk/i.test(salaryText);
+    const isMon  = /month|\/mo/i.test(salaryText);
+
+    // Lấy TẤT CẢ số trong chuỗi
     const cleaned = salaryText.replace(/,/g, '');
-    const nums = [...cleaned.matchAll(/\$?([\d.]+)/g)].map(m => parseFloat(m[1]));
+    const nums = [...cleaned.matchAll(/(\d+(?:\.\d+)?)/g)]
+        .map(m => parseFloat(m[1]))
+        .filter(n => n > 0);
     if (!nums.length) return false;
-    const isHour = /hour|hr/i.test(salaryText);
-    const isYear = /year|yr|annual/i.test(salaryText);
-    for (const n of nums) {
-        if (isHour && n >= MIN_SALARY_HOUR) return true;
-        if (isYear && n >= MIN_SALARY_YEAR) return true;
-        if (!isHour && !isYear && n >= MIN_SALARY_YEAR) return true;
-    }
-    return false;
+
+    // Dùng số CAO NHẤT trong range (vd: $80k - $160k → dùng 160k)
+    const maxNum = Math.max(...nums);
+
+    if (isHour)  return maxNum >= MIN_SALARY_HOUR;
+    if (isYear)  return maxNum >= MIN_SALARY_YEAR;
+    if (isWeek)  return (maxNum * 52) >= MIN_SALARY_YEAR;
+    if (isMon)   return (maxNum * 12) >= MIN_SALARY_YEAR;
+
+    // Không rõ đơn vị: nếu số lớn (>= 1000) coi là /năm, nhỏ hơn coi là /giờ
+    if (maxNum >= 1000) return maxNum >= MIN_SALARY_YEAR;
+    return maxNum >= MIN_SALARY_HOUR;
 }
 
 async function scraperGet(url, isDetail = false) {

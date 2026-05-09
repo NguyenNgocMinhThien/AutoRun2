@@ -70,55 +70,17 @@ function salaryQualifies(salaryText) {
     return maxNum >= MIN_SALARY_HOUR;
 }
 
-async function scraperGet(url, usePremium = false) {
-    const params = {
-        api_key:         process.env.SCRAPER_API_KEY,
-        url,
-        country_code:    'us',
-        render:          'true',
-        // Headers giả lập Chrome browser thật
-        'x-sap-browser':  'chrome',
-        device_type:     'desktop'
-    };
-    if (usePremium) {
-        params.premium       = 'true';
-        params.ultra_premium = 'true';
-    }
-
+async function scraperGet(url) {
     return axios.get('https://api.scraperapi.com/', {
-        params,
-        timeout: 120000,
-        headers: {
-            // Custom headers gửi kèm lên Indeed qua ScraperAPI
-            'X-MyHeader-Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'X-MyHeader-Accept-Language': 'en-US,en;q=0.9',
-            'X-MyHeader-Accept-Encoding': 'gzip, deflate, br',
-            'X-MyHeader-Referer':         'https://www.google.com/',
-            'X-MyHeader-Sec-Fetch-Dest':  'document',
-            'X-MyHeader-Sec-Fetch-Mode':  'navigate',
-            'X-MyHeader-Sec-Fetch-Site':  'cross-site',
-            'X-MyHeader-Cache-Control':   'max-age=0',
-            'X-MyHeader-DNT':             '1'
-        }
+        params: {
+            api_key:      process.env.SCRAPER_API_KEY,
+            url,
+            country_code: 'us',
+            render:       'true',
+            keep_headers: 'true'
+        },
+        timeout: 120000
     });
-}
-
-// Wrapper tự động retry với premium nếu bị 403
-async function scraperGetWithFallback(url) {
-    // Lần 1: thường
-    try { return await scraperGet(url, false); } catch (e1) {
-        if (![403, 429, 500].includes(e1.response?.status)) throw e1;
-    }
-    // Lần 2: premium sau 4s
-    await new Promise(r => setTimeout(r, 4000));
-    console.log(`    🔄 Retry premium...`);
-    try { return await scraperGet(url, true); } catch (e2) {
-        // Lần 3: đổi URL sang indeed.com/jobs không có radius
-        await new Promise(r => setTimeout(r, 4000));
-        console.log(`    🔄 Retry URL fallback...`);
-        const fallbackUrl = url.replace('&radius=50', '').replace('radius=50&', '');
-        return await scraperGet(fallbackUrl, true);
-    }
 }
 
 function parseSalary($, root) {
@@ -148,7 +110,7 @@ function cleanSalary(s) {
 async function fetchDetailSalary(link) {
     try {
         await new Promise(r => setTimeout(r, 500));
-        const res = await scraperGetWithFallback(link);
+        const res = await scraperGet(link);
         return parseSalary(cheerio.load(res.data), null);
     } catch { return ''; }
 }
@@ -157,7 +119,7 @@ async function scrapeKeywordLocation(kw, location) {
     const url = `https://www.indeed.com/jobs?q=${encodeURIComponent(kw)}&l=${encodeURIComponent(location)}&radius=50&fromage=${FROMAGE}`;
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-            const res = await scraperGetWithFallback(url);
+            const res = await scraperGet(url);
             const $   = cheerio.load(res.data);
             const cards = [];
 

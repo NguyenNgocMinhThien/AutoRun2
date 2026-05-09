@@ -25,9 +25,9 @@ const LOCATIONS = [
     "San Jose, CA"
 ];
 
-const MAX_PER_KW    = 30; // crawl nhiều để lọc đủ job $250k+  // crawl nhiều để lọc đủ job $250k+
+const MAX_PER_KW    = 10;
 const FROMAGE       = 14;  // mở rộng 14 ngày
-const FETCH_DETAIL  = true;
+const FETCH_DETAIL  = false; // tắt để tránh chạy quá lâu
 const MIN_SALARY_YEAR  = 150000;  // hạ xuống $150k vì $250k quá ít job
 const MIN_SALARY_HOUR  = 72;      // $72/hr ≈ $150k/năm
 
@@ -75,7 +75,6 @@ async function scraperGet(url, isDetail = false) {
             url,
             country_code: 'us',
             render:       'true',        // giả lập browser, bypass Indeed block
-            premium:      'true',        // dùng premium proxy tránh 403
             keep_headers: 'true'
         },
         timeout: 120000
@@ -115,7 +114,7 @@ function cleanSalary(s) {
 
 async function fetchDetailSalary(link) {
     try {
-        await new Promise(r => setTimeout(r, 1200));
+        await new Promise(r => setTimeout(r, 800));
         const res = await scraperGet(link);
         const $   = cheerio.load(res.data);
         return parseSalary($, null);
@@ -303,7 +302,7 @@ async function runScraper() {
             if (kwJobs.length >= MAX_PER_KW) break;
             const jobs = await scrapeKeywordLocation(kw, loc);
             kwJobs.push(...jobs);
-            await new Promise(r => setTimeout(r, 2000));
+            await new Promise(r => setTimeout(r, 1000));
         }
         kwJobs = dedup(kwJobs).slice(0, MAX_PER_KW);
         console.log(`  → "${kw}": ${kwJobs.length} jobs\n`);

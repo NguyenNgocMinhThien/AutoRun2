@@ -19,6 +19,27 @@ const KEYWORDS = [
     "technology manager"
 ];
 
+// Lọc title phải chứa ít nhất 1 trong các keyword này
+const TITLE_KEYWORDS = [
+    "analytics",
+    "artificial intelligence",
+    "data",
+    "data scientist",
+    "finance",
+    "financial analyst",
+    "investment",
+    "investment management",
+    "machine learning",
+    "systems analyst",
+    "technology manager"
+];
+
+function titleQualifies(title) {
+    if (!title) return false;
+    const t = title.toLowerCase();
+    return TITLE_KEYWORDS.some(kw => t.includes(kw.toLowerCase()));
+}
+
 const LOCATIONS = [
     "Los Angeles, CA",
     "San Francisco, CA",
@@ -167,6 +188,9 @@ async function scrapeKeywordLocation(kw, location) {
                 if (!salary && FETCH_DETAIL && c.link !== 'N/A') {
                     salary = await fetchDetailSalary(c.link);
                 }
+                // Bỏ qua nếu title không match keyword
+                if (!titleQualifies(c.title)) continue;
+
                 // Bỏ qua nếu không đạt $250k
                 if (!salaryQualifies(salary)) continue;
 
@@ -337,9 +361,20 @@ async function runScraper() {
     // Xuất Excel backup
     const fileName = `Indeed_US_CA_${new Date().toISOString().slice(0,10)}.xlsx`;
     const ws = XLSX.utils.json_to_sheet(allJobs);
+
+    // Auto-width columns
     ws['!cols'] = Object.keys(allJobs[0]).map(k => ({
         wch: Math.min(60, Math.max(k.length + 2, ...allJobs.map(r => String(r[k]||'').length)))
     }));
+
+    // Bật AutoFilter trên toàn bộ header row
+    const totalCols = Object.keys(allJobs[0]).length;
+    const lastCol   = String.fromCharCode(64 + totalCols); // A=1 → Z=26
+    ws['!autofilter'] = { ref: `A1:${lastCol}1` };
+
+    // Freeze row 1 (header)
+    ws['!freeze'] = { xSplit: 0, ySplit: 1, topLeftCell: 'A2', activePane: 'bottomLeft' };
+
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Jobs");
     XLSX.writeFile(wb, fileName);

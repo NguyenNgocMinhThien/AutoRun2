@@ -70,11 +70,30 @@ function salaryQualifies(salaryText) {
     return maxNum >= MIN_SALARY_HOUR;
 }
 
-async function scraperGet(url) {
-    return axios.get('https://api.scraperapi.com/', {
-        params: { api_key: process.env.SCRAPER_API_KEY, url, country_code: 'us', render: 'true', keep_headers: 'true' },
-        timeout: 120000
-    });
+async function scraperGet(url, usePremium = false) {
+    const params = {
+        api_key:      process.env.SCRAPER_API_KEY,
+        url,
+        country_code: 'us',
+        render:       'true',
+        keep_headers: 'true'
+    };
+    if (usePremium) params.premium = 'true';
+    return axios.get('https://api.scraperapi.com/', { params, timeout: 120000 });
+}
+
+// Wrapper tự động retry với premium nếu bị 403
+async function scraperGetWithFallback(url) {
+    try {
+        return await scraperGet(url, false);
+    } catch (err) {
+        if (err.response?.status === 403 || err.response?.status === 429) {
+            console.log(`    🔄 Retry với premium proxy...`);
+            await new Promise(r => setTimeout(r, 3000));
+            return await scraperGet(url, true); // retry với premium
+        }
+        throw err;
+    }
 }
 
 function parseSalary($, root) {
@@ -104,7 +123,7 @@ function cleanSalary(s) {
 async function fetchDetailSalary(link) {
     try {
         await new Promise(r => setTimeout(r, 500));
-        const res = await scraperGet(link);
+        const res = await scraperGetWithFallback(link);
         return parseSalary(cheerio.load(res.data), null);
     } catch { return ''; }
 }
@@ -113,7 +132,7 @@ async function scrapeKeywordLocation(kw, location) {
     const url = `https://www.indeed.com/jobs?q=${encodeURIComponent(kw)}&l=${encodeURIComponent(location)}&radius=50&fromage=${FROMAGE}`;
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-            const res = await scraperGet(url);
+            const res = await scraperGetWithFallback(url);
             const $   = cheerio.load(res.data);
             const cards = [];
 

@@ -31,8 +31,9 @@ const FETCH_DETAIL     = true;
 const MIN_SALARY_YEAR  = 250000;
 const MIN_SALARY_HOUR  = 120;
 
-const SPREADSHEET_ID = '1n-Vkvrbt6fAo_6tU5KKx54cmn_J64mRyHbSvPi7tDX0';
+const SPREADSHEET_ID = '1vUcKAbDazlC_vFSjzty02Fdugu4Nw_jZsEG2k_wyxXY';
 const SHEET_NAME     = 'Job indeed';
+const SHEET_GID      = '158387611';
 // =====================================================
 
 const now   = new Date();
@@ -222,7 +223,7 @@ async function sendToTeams(n, fileLink) {
                 ]}
             ],
             actions: [
-                { type: "Action.OpenUrl", title: "📊 Mở Google Sheet", url: `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit#gid=158387611` },
+                { type: "Action.OpenUrl", title: "📊 Mở Google Sheet", url: `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit?gid=${SHEET_GID}#gid=${SHEET_GID}` },
                 { type: "Action.OpenUrl", title: "📥 Tải Excel", url: fileLink }
             ],
             $schema: "http://adaptivecards.io/schemas/adaptive-card.json"
@@ -276,20 +277,13 @@ async function runScraper() {
 
     await appendToGoogleSheet(allJobs);
 
-    // Xuất Excel với AutoFilter + Freeze row 1
     const fileName = `Indeed_US_CA_${new Date().toISOString().slice(0,10)}.xlsx`;
     const ws = XLSX.utils.json_to_sheet(allJobs);
-
-    // Auto-width
     ws['!cols'] = Object.keys(allJobs[0]).map(k => ({
         wch: Math.min(60, Math.max(k.length + 2, ...allJobs.map(r => String(r[k]||'').length)))
     }));
-
-    // AutoFilter — click mũi tên ▼ ở header để filter theo keyword
     const lastCol = String.fromCharCode(64 + Object.keys(allJobs[0]).length);
     ws['!autofilter'] = { ref: `A1:${lastCol}1` };
-
-    // Freeze row 1 — cuộn xuống vẫn thấy header
     ws['!freeze'] = { xSplit: 0, ySplit: 1, topLeftCell: 'A2', activePane: 'bottomLeft' };
 
     const wb = XLSX.utils.book_new();
@@ -299,7 +293,7 @@ async function runScraper() {
 
     const fileLink = await uploadToCatbox(fileName);
     await Promise.all([
-        sendTelegramAlert(`✅ <b>Indeed US / California</b>\n<b>${allJobs.length} jobs</b>\n📊 <a href="https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit#gid=158387611">Mở Sheet</a>\n📎 <a href="${fileLink}">Tải Excel</a>`),
+        sendTelegramAlert(`✅ <b>Indeed US / California</b>\n<b>${allJobs.length} jobs</b>\n📊 <a href="https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit?gid=${SHEET_GID}#gid=${SHEET_GID}">Mở Sheet</a>\n📎 <a href="${fileLink}">Tải Excel</a>`),
         sendTelegramFile(fileName),
         sendToTeams(allJobs.length, fileLink)
     ]);

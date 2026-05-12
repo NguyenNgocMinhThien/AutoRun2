@@ -30,6 +30,7 @@ const FROMAGE          = 14;
 const FETCH_DETAIL     = true;
 const MIN_SALARY_YEAR  = 250000;
 const MIN_SALARY_HOUR  = 120;
+const CONCURRENCY      = 5;   // số request chạy song song cùng lúc
 
 const SPREADSHEET_ID = '1vUcKAbDazlC_vFSjzty02Fdugu4Nw_jZsEG2k_wyxXY';
 const SHEET_NAME     = 'Job indeed';
@@ -41,6 +42,19 @@ const dd    = String(now.getDate()).padStart(2, '0');
 const mm    = String(now.getMonth() + 1).padStart(2, '0');
 const yyyy  = now.getFullYear();
 const TODAY = `${dd}/${mm}/${yyyy}`;
+
+// Chạy tối đa N tasks song song
+async function parallelLimit(tasks, limit) {
+    const results = [];
+    const pool = [];
+    for (const task of tasks) {
+        const p = Promise.resolve().then(task).then(r => { results.push(r); pool.splice(pool.indexOf(p), 1); });
+        pool.push(p);
+        if (pool.length >= limit) await Promise.race(pool);
+    }
+    await Promise.all(pool);
+    return results;
+}
 
 function dedup(jobs) {
     const seen = new Set();
@@ -110,7 +124,6 @@ function cleanSalary(s) {
 
 async function fetchDetailSalary(link) {
     try {
-        await new Promise(r => setTimeout(r, 500));
         const res = await scraperGet(link);
         return parseSalary(cheerio.load(res.data), null);
     } catch { return ''; }
@@ -129,8 +142,8 @@ async function scrapeKeywordLocation(kw, location) {
                 const titleEl = $(el).find('h2.jobTitle a, a.jcs-JobTitle');
                 const title   = titleEl.text().trim() || $(el).find('h2.jobTitle').text().trim();
                 if (!title) return;
-                const href    = titleEl.attr('href') || '';
-                const link    = href.startsWith('http') ? href : `https://www.indeed.com${href}`;
+                const href = titleEl.attr('href') || '';
+                const link = href.startsWith('http') ? href : `https://www.indeed.com${href}`;
                 cards.push({
                     title, link,
                     salary:  parseSalary($, el),
@@ -140,31 +153,34 @@ async function scrapeKeywordLocation(kw, location) {
                 });
             });
 
-            const jobs = [];
-            for (const c of cards) {
-                let salary = c.salary;
-                if (!salary && FETCH_DETAIL && c.link !== 'N/A') {
-                    salary = await fetchDetailSalary(c.link);
-                }
-                if (!salaryQualifies(salary)) continue;
-                jobs.push({
+            // Fetch detail salary song song (không tuần tự)
+            const detailTasks = cards
+                .filter(c => !c.salary && FETCH_DETAIL && c.link !== 'N/A')
+                .map(c => async () => {
+                    c.salary = await fetchDetailSalary(c.link);
+                });
+            await parallelLimit(detailTasks, 3); // 3 detail fetch song song
+
+            const jobs = cards
+                .filter(c => salaryQualifies(c.salary))
+                .map(c => ({
                     Company:     c.company,
                     Title:       c.title,
                     Link:        c.link,
-                    Salary:      salary,
+                    Salary:      c.salary,
                     Location:    c.loc,
                     Page:        1,
                     EasilyApply: c.quick ? 'Indeed Quick Apply' : 'Company Website',
                     DateCrawled: TODAY,
                     CrawledBy:   ''
-                });
-            }
+                }));
 
             console.log(`  ✅ [${location}] "${kw}" → ${jobs.length} jobs`);
             return jobs;
+
         } catch (err) {
             console.warn(`  ⚠️ Lần ${attempt} [${location}] "${kw}" — ${err.response?.status ?? err.message}`);
-            if (attempt < 3) await new Promise(r => setTimeout(r, 5000));
+            if (attempt < 3) await new Promise(r => setTimeout(r, 3000));
         }
     }
     return [];
@@ -255,23 +271,35 @@ async function sendTelegramFile(filePath) {
 
 async function runScraper() {
     console.log("🚀 Indeed US Scraper — California");
-    console.log(`📋 ${KEYWORDS.length} keywords | Max ${MAX_PER_KW}/keyword | Sheet: "${SHEET_NAME}"\n`);
+    console.log(`📋 ${KEYWORDS.length} keywords × ${LOCATIONS.length} vùng | Concurrency: ${CONCURRENCY} | Sheet: "${SHEET_NAME}"\n`);
     if (!process.env.SCRAPER_API_KEY) { console.error("❌ Thiếu SCRAPER_API_KEY!"); process.exit(1); }
 
-    let allJobs = [];
+    // Tạo tất cả task (keyword × location) rồi chạy song song
+    const allTasks = [];
     for (const kw of KEYWORDS) {
-        let kwJobs = [];
         for (const loc of LOCATIONS) {
-            if (kwJobs.length >= MAX_PER_KW) break;
-            kwJobs.push(...await scrapeKeywordLocation(kw, loc));
-            await new Promise(r => setTimeout(r, 1000));
+            allTasks.push(() => scrapeKeywordLocation(kw, loc));
         }
-        kwJobs = dedup(kwJobs).slice(0, MAX_PER_KW);
-        console.log(`  → "${kw}": ${kwJobs.length} jobs\n`);
-        allJobs.push(...kwJobs);
     }
 
+    console.log(`⚡ Chạy ${allTasks.length} tasks song song (${CONCURRENCY} cùng lúc)...\n`);
+    const results = await parallelLimit(allTasks, CONCURRENCY);
+
+    // Gộp và giới hạn MAX_PER_KW cho mỗi keyword
+    const jobsByKw = {};
+    for (const kw of KEYWORDS) jobsByKw[kw] = [];
+
+    for (const jobs of results) {
+        for (const job of jobs) {
+            const kw = job._kw || KEYWORDS.find(k => job.Title?.toLowerCase().includes(k) || job.Keyword === k) || 'other';
+            if (!jobsByKw[kw]) jobsByKw[kw] = [];
+            jobsByKw[kw].push(job);
+        }
+    }
+
+    let allJobs = results.flat();
     allJobs = dedup(allJobs);
+
     console.log(`📦 Tổng: ${allJobs.length} jobs`);
     if (!allJobs.length) { await sendTelegramAlert("❌ Indeed US/CA: Không có job nào."); return; }
 

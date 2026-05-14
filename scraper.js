@@ -30,7 +30,7 @@ const FROMAGE          = 14;
 const FETCH_DETAIL     = true;
 const MIN_SALARY_YEAR  = 250000;
 const MIN_SALARY_HOUR  = 120;
-const CONCURRENCY      = 3;   // giảm xuống tránh rate limit   // số request chạy song song cùng lúc
+const CONCURRENCY      = 1;   // tuần tự hoàn toàn tránh rate limit
 
 const SPREADSHEET_ID = '1vUcKAbDazlC_vFSjzty02Fdugu4Nw_jZsEG2k_wyxXY';
 const SHEET_NAME     = 'Job indeed';
@@ -44,7 +44,7 @@ const yyyy  = now.getFullYear();
 const TODAY = `${dd}/${mm}/${yyyy}`;
 
 // Chạy tối đa N tasks song song, có delay giữa các batch
-async function parallelLimit(tasks, limit, delayMs = 1500) {
+async function parallelLimit(tasks, limit, delayMs = 3000) {
     const results = new Array(tasks.length);
     let idx = 0;
 
@@ -95,7 +95,7 @@ async function scraperGet(url) {
             api_key:      process.env.SCRAPER_API_KEY,
             url,
             country_code: 'us',
-            render:       'true',
+            render:       'false',  // tắt render để nhanh hơn và tránh 500
             keep_headers: 'true'
         },
         timeout: 120000

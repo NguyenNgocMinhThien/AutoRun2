@@ -30,7 +30,7 @@ const FROMAGE          = 14;
 const FETCH_DETAIL     = true;
 const MIN_SALARY_YEAR  = 250000;
 const MIN_SALARY_HOUR  = 120;
-const CONCURRENCY      = 5;   // số request chạy song song cùng lúc
+const CONCURRENCY      = 3;   // giảm xuống tránh rate limit   // số request chạy song song cùng lúc
 
 const SPREADSHEET_ID = '1vUcKAbDazlC_vFSjzty02Fdugu4Nw_jZsEG2k_wyxXY';
 const SHEET_NAME     = 'Job indeed';
@@ -43,16 +43,20 @@ const mm    = String(now.getMonth() + 1).padStart(2, '0');
 const yyyy  = now.getFullYear();
 const TODAY = `${dd}/${mm}/${yyyy}`;
 
-// Chạy tối đa N tasks song song
-async function parallelLimit(tasks, limit) {
-    const results = [];
-    const pool = [];
-    for (const task of tasks) {
-        const p = Promise.resolve().then(task).then(r => { results.push(r); pool.splice(pool.indexOf(p), 1); });
-        pool.push(p);
-        if (pool.length >= limit) await Promise.race(pool);
+// Chạy tối đa N tasks song song, có delay giữa các batch
+async function parallelLimit(tasks, limit, delayMs = 1500) {
+    const results = new Array(tasks.length);
+    let idx = 0;
+
+    async function worker() {
+        while (idx < tasks.length) {
+            const i = idx++;
+            results[i] = await Promise.resolve().then(tasks[i]);
+            if (idx < tasks.length) await new Promise(r => setTimeout(r, delayMs));
+        }
     }
-    await Promise.all(pool);
+
+    await Promise.all(Array.from({ length: limit }, worker));
     return results;
 }
 
@@ -180,7 +184,7 @@ async function scrapeKeywordLocation(kw, location) {
 
         } catch (err) {
             console.warn(`  ⚠️ Lần ${attempt} [${location}] "${kw}" — ${err.response?.status ?? err.message}`);
-            if (attempt < 3) await new Promise(r => setTimeout(r, 3000));
+            if (attempt < 3) await new Promise(r => setTimeout(r, 8000));
         }
     }
     return [];

@@ -30,55 +30,55 @@ const FROMAGE          = 14;
 const FETCH_DETAIL     = true;
 const MIN_SALARY_YEAR  = 250000;
 const MIN_SALARY_HOUR  = 120;
-const CONCURRENCY      = 1;   // tuần tự hoàn toàn tránh rate limit
+const CONCURRENCY      = 2;   // tăng lên 2 - cân bằng tốc độ vs rate limit
 
 const SPREADSHEET_ID = '1vUcKAbDazlC_vFSjzty02Fdugu4Nw_jZsEG2k_wyxXY';
 const SHEET_NAME     = 'Job indeed';
 const SHEET_GID      = '158387611';
 // =====================================================
 
+// Pool API keys — xoay vòng khi key bị hết credit
+let apiKeys = [];
+let keyIndex = 0;
+
+function getNextApiKey() {
+    if (!apiKeys.length) return process.env.SCRAPER_API_KEY;
+    const key = apiKeys[keyIndex % apiKeys.length];
+    keyIndex++;
+    return key;
+}
+
+async function getScraperApiKeys() {
+    const sheetExcelUrl = "https://docs.google.com/spreadsheets/d/1TvG_bxAE0AIStNuAxVMrfYdnJepKWvRGhDkFTRcRIzs/export?format=xlsx";
+    try {
+        console.log("📥 Đang tải danh sách API Keys từ Google Sheet...");
+        const response = await axios.get(sheetExcelUrl, { responseType: 'arraybuffer' });
+        const workbook  = XLSX.read(response.data, { type: 'buffer' });
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        const jsonData  = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+        const keys = [];
+        for (let i = 1; i < jsonData.length; i++) {
+            const row    = jsonData[i];
+            const apiKey = row[3] ? row[3].toString().trim() : "";
+            if (apiKey && apiKey.length >= 20 && !apiKey.includes("KEY")) {
+                keys.push(apiKey);
+            }
+        }
+
+        console.log(`✅ Đã tải ${keys.length} API Keys từ Google Sheet.`);
+        return keys.length ? keys : [process.env.SCRAPER_API_KEY];
+    } catch (error) {
+        console.error("❌ Không thể đọc Google Sheet, dùng key mặc định:", error.message);
+        return [process.env.SCRAPER_API_KEY];
+    }
+}
+
 const now   = new Date();
 const dd    = String(now.getDate()).padStart(2, '0');
 const mm    = String(now.getMonth() + 1).padStart(2, '0');
 const yyyy  = now.getFullYear();
 const TODAY = `${dd}/${mm}/${yyyy}`;
-
-async function getScraperApiKeys() {
-    // URL tải file dưới dạng Excel (xlsx) thay vì CSV để xử lý chính xác theo cột
-    const sheetExcelUrl = "https://docs.google.com/spreadsheets/d/1TvG_bxAE0AIStNuAxVMrfYdnJepKWvRGhDkFTRcRIzs/export?format=xlsx";
-    try {
-        console.log("📥 Đang tải danh sách API Keys từ Google Sheet...");
-        const response = await axios.get(sheetExcelUrl, { responseType: 'arraybuffer' });
-        
-        // Đọc dữ liệu Excel bằng thư viện XLSX có sẵn trong dự án của bạn
-        const workbook = XLSX.read(response.data, { type: 'buffer' });
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        
-        // Chuyển đổi sheet thành mảng JSON dữ liệu
-        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-        
-        let keys = [];
-        
-        // Vòng lặp duyệt qua từng hàng dữ liệu (bỏ qua hàng tiêu đề đầu tiên)
-        for (let i = 1; i < jsonData.length; i++) {
-            const row = jsonData[i];
-            // Cột D trong Excel tương ứng với index số 3 trong mảng (A=0, B=1, C=2, D=3)
-            const apiKey = row[3] ? row[3].toString().trim() : "";
-            
-            // Chỉ lấy các chuỗi hợp lệ, độ dài tối thiểu của một ScraperAPI Key chuẩn (~32 ký tự)
-            if (apiKey && apiKey.length >= 20 && !apiKey.includes("KEY")) {
-                keys.push(apiKey);
-            }
-        }
-        
-        console.log(`✅ Đã bóc tách chính xác ${keys.length} API Keys hoạt động từ Cột D.`);
-        return keys;
-    } catch (error) {
-        console.error("❌ Không thể đọc Google Sheet, khôi phục dùng Key mặc định từ Secret:", error.message);
-        return [process.env.SCRAPER_API_KEY]; 
-    }
-}
 
 // Chạy tối đa N tasks song song, có delay giữa các batch
 async function parallelLimit(tasks, limit, delayMs = 3000) {
@@ -127,12 +127,13 @@ function salaryQualifies(salaryText) {
 }
 
 async function scraperGet(url) {
+    const api_key = getNextApiKey();
     return axios.get('https://api.scraperapi.com/', {
         params: {
-            api_key:      process.env.SCRAPER_API_KEY,
+            api_key,
             url,
             country_code: 'us',
-            render:       'false',  // tắt render để nhanh hơn và tránh 500
+            render:       'false',
             keep_headers: 'true'
         },
         timeout: 120000
@@ -314,6 +315,10 @@ async function runScraper() {
     console.log("🚀 Indeed US Scraper — California");
     console.log(`📋 ${KEYWORDS.length} keywords × ${LOCATIONS.length} vùng | Concurrency: ${CONCURRENCY} | Sheet: "${SHEET_NAME}"\n`);
     if (!process.env.SCRAPER_API_KEY) { console.error("❌ Thiếu SCRAPER_API_KEY!"); process.exit(1); }
+
+    // Load danh sách API keys từ Google Sheet, xoay vòng khi hết credit
+    apiKeys = await getScraperApiKeys();
+    console.log(`🔑 Sử dụng ${apiKeys.length} API key(s) xoay vòng\n`);
 
     // Tạo tất cả task (keyword × location) rồi chạy song song
     const allTasks = [];

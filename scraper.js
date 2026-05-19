@@ -37,15 +37,31 @@ const SHEET_NAME     = 'Job indeed';
 const SHEET_GID      = '158387611';
 // =====================================================
 
-// Pool API keys — xoay vòng khi key bị hết credit
-let apiKeys = [];
-let keyIndex = 0;
+// Pool API keys — smart switching khi key hết credit
+let apiKeys    = [];
+let currentIdx = 0;
+const deadKeys = new Set(); // keys đã hết credit
 
-function getNextApiKey() {
+function getCurrentKey() {
     if (!apiKeys.length) return process.env.SCRAPER_API_KEY;
-    const key = apiKeys[keyIndex % apiKeys.length];
-    keyIndex++;
-    return key;
+    // Tìm key còn sống tiếp theo
+    for (let i = 0; i < apiKeys.length; i++) {
+        const idx = (currentIdx + i) % apiKeys.length;
+        if (!deadKeys.has(apiKeys[idx])) return apiKeys[idx];
+    }
+    // Tất cả dead → reset và thử lại
+    console.warn("⚠️ Tất cả API keys hết credit! Reset và thử lại...");
+    deadKeys.clear();
+    return apiKeys[0];
+}
+
+function markKeyDead(key) {
+    deadKeys.add(key);
+    const alive = apiKeys.filter(k => !deadKeys.has(k)).length;
+    console.warn(`🔑 Key ...${key.slice(-6)} hết credit → chuyển key khác (còn ${alive} key)`);
+    // Chuyển sang key tiếp theo
+    currentIdx = apiKeys.findIndex(k => !deadKeys.has(k));
+    if (currentIdx === -1) currentIdx = 0;
 }
 
 async function getScraperApiKeys() {
@@ -127,17 +143,30 @@ function salaryQualifies(salaryText) {
 }
 
 async function scraperGet(url) {
-    const api_key = getNextApiKey();
-    return axios.get('https://api.scraperapi.com/', {
-        params: {
-            api_key,
-            url,
-            country_code: 'us',
-            render:       'false',
-            keep_headers: 'true'
-        },
-        timeout: 120000
-    });
+    let lastErr;
+    const maxKeyTries = Math.max(apiKeys.length || 1, 1);
+
+    for (let t = 0; t < maxKeyTries; t++) {
+        const api_key = getCurrentKey();
+        try {
+            const res = await axios.get('https://api.scraperapi.com/', {
+                params: { api_key, url, country_code: 'us', render: 'false', keep_headers: 'true' },
+                timeout: 120000
+            });
+            return res;
+        } catch (err) {
+            const status = err.response?.status;
+            if (status === 403 || status === 429) {
+                // Key hết credit hoặc bị block → đánh dấu dead, thử key khác
+                markKeyDead(api_key);
+                lastErr = err;
+                continue; // thử key tiếp theo ngay
+            }
+            // Lỗi khác (500, timeout...) → throw luôn
+            throw err;
+        }
+    }
+    throw lastErr;
 }
 
 function parseSalary($, root) {
